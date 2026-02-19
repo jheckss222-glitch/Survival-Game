@@ -195,14 +195,79 @@ class SurvivalGame:
         env = self.current_env()
         print(f"\n== {env.name} ==")
         print(f"Terrain: {env.terrain}")
-        print(env.flavor)
-        print(f"Weather: {self.weather.name} — {self.weather.mood}")
-        print("Points of interest:")
-        for p in env.pois:
-            print(f" - {p.name}: {p.description}")
-        print("Water sources:")
+
+        flavor_parts = [part.strip() for part in env.flavor.split("|") if part.strip()]
+        scene_setter = flavor_parts[0] if flavor_parts else env.flavor
+        terrain_cover = flavor_parts[1] if len(flavor_parts) > 1 else ""
+        ground_travel = flavor_parts[2] if len(flavor_parts) > 2 else ""
+        air_light = flavor_parts[3] if len(flavor_parts) > 3 else ""
+
+        print(f"\n{scene_setter}")
+        if terrain_cover:
+            print(f"\nTerrain & Cover: {terrain_cover}")
+        if ground_travel:
+            print(f"Ground & Travel: {ground_travel}")
+        if air_light:
+            print(f"Air & Light: {air_light}")
+
+        print(f"\nWeather — {self.weather.name}: {self.weather.mood}")
+
+        print("\nWater:")
         for w in env.water_sources:
             print(f" - {w.name} ({w.quality}): {w.description}")
+
+        print("\nPoints of Interest:")
+        for p in env.pois:
+            print(f" - {p.name}: {p.description}")
+
+        notes: List[str] = []
+        if env.temp_bias <= -5:
+            notes.append("Exposure risk increases quickly if you are wet or inactive.")
+        elif env.temp_bias >= 3:
+            notes.append("Heat stress risk rises at midday; shade and pace matter.")
+
+        if self.weather.name in {"Rain", "Storm"}:
+            notes.append("Fire is harder to maintain in current conditions.")
+        elif self.weather.name == "Frostwind":
+            notes.append("Wind chill can outpace clothing insulation.")
+
+        if notes:
+            print("\nNotes:")
+            for note in notes[:2]:
+                print(f" - {note}")
+
+        aside = self._rare_wanderer_aside(env.name)
+        if aside:
+            print(f"\nWanderer Note: {aside}")
+
+    def _rare_wanderer_aside(self, env_name: str) -> str | None:
+        """Occasionally print a short, gentle aside to keep tone whimsical but grounded."""
+        if random.random() > 0.12:
+            return None
+
+        asides = {
+            "Emerald Pinewood": [
+                "A pinecone drops somewhere behind you with the confidence of a drumbeat.",
+                "A squirrel freezes on a branch, reassesses your whole deal, and moves on.",
+            ],
+            "Sunfire Canyon": [
+                "Your own footsteps come back a moment late, like the canyon is double-checking your route.",
+                "A small dust devil crosses the wash, then immediately forgets its purpose.",
+            ],
+            "Frostglass Tundra": [
+                "Snow grains skip across the crust in tidy lines, as if practicing handwriting.",
+                "The cold pinches your nose and keeps excellent time doing it.",
+            ],
+            "Mossmere Wetlands": [
+                "Reed stems click together in the wind with the patience of careful knitting.",
+                "Something plops in dark water, and every nearby insect pretends nothing happened.",
+            ],
+            "Starfall Coast": [
+                "A crab watches from a tide pocket with the calm authority of a lighthouse keeper.",
+                "Foam slides over black rock and leaves a lace edge that vanishes before you can point it out.",
+            ],
+        }
+        return random.choice(asides.get(env_name, ["The place settles into a steady rhythm you can work with."]))
 
     def status(self) -> None:
         p = self.player
