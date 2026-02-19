@@ -31,22 +31,19 @@ class Poi:
 
 @dataclass
 class ResourceNode:
-    """Tracks local gatherable resources with depletion and regeneration behavior."""
+    """Tracks local gatherable resources with depletion, stress, and regeneration behavior."""
 
     item: str
     count: int
     max_count: int
     regen_rate: int
+    stress: int = 0
 
     def harvest(self, amount: int) -> int:
         """Take up to `amount` resources from the node and return actual harvested quantity."""
         taken = min(self.count, amount)
         self.count -= taken
         return taken
-
-    def regenerate(self) -> None:
-        """Regenerate this node by its configured regen rate each world tick."""
-        self.count = min(self.max_count, self.count + self.regen_rate)
 
 
 @dataclass
@@ -60,6 +57,7 @@ class Environment:
     pois: List[Poi]
     temp_bias: int
     resource_nodes: Dict[str, ResourceNode]
+    soundscape: Dict[str, List[str]]
 
 
 @dataclass
@@ -70,6 +68,31 @@ class Weather:
     fire_modifier: float
     hunt_modifier: float
     mood: str
+
+
+@dataclass
+class Season:
+    """Defines macro-scale climate pressure that cycles over long play windows."""
+
+    name: str
+    temp_shift: int
+    regen_modifier: int
+    hunt_modifier: float
+    description: str
+
+
+@dataclass
+class Event:
+    """Temporary world condition that stacks with weather and season effects."""
+
+    name: str
+    duration_hours: int
+    temp_shift: int
+    thirst_rate: int
+    fire_modifier: float
+    hunt_modifier: float
+    regen_modifier: int
+    description: str
 
 
 @dataclass
@@ -104,6 +127,7 @@ class Player:
     })
     shelter: Shelter = field(default_factory=Shelter)
     fire_lit: bool = False
+    camp_comfort: int = 0
 
 
 class SurvivalGame:
@@ -112,8 +136,16 @@ class SurvivalGame:
     def __init__(self) -> None:
         self.world = self._load_world_from_data(WORLD_DATA)
         self.weather_types = self._load_weather_from_data(WEATHER_DATA)
+        self.seasons = self._build_seasons()
         self.player = Player(location=random.randint(0, len(self.world) - 1))
         self.weather = random.choice(self.weather_types)
+        self.season_length_hours = 48
+        self.season_index = 0
+        self.season_timer = 0
+        self.current_season = self.seasons[self.season_index]
+        self.active_event: Event | None = None
+        self.event_timer = 0
+        self.event_check_timer = 0
         self.running = True
         self.commands = self._build_command_table()
 
@@ -137,9 +169,11 @@ class SurvivalGame:
                             count=node["count"],
                             max_count=node["max"],
                             regen_rate=node["regen"],
+                            stress=node.get("stress", 0),
                         )
                         for item, node in entry["resource_nodes"].items()
                     },
+                    soundscape=entry.get("soundscape", {}),
                 )
             )
         return world
@@ -147,6 +181,26 @@ class SurvivalGame:
     def _load_weather_from_data(self, weather_data: List[dict]) -> List[Weather]:
         """Build Weather objects from data definitions."""
         return [Weather(**entry) for entry in weather_data]
+
+    def _build_seasons(self) -> List[Season]:
+        """Create ordered season cycle for long-horizon survival pressure."""
+        return [
+            Season("Spring", 0, 1, 0.0, "Meltwater rises and growth returns; supplies recover quickly."),
+            Season("Summer", 3, 0, 0.0, "Long dry days increase heat pressure and water demand."),
+            Season("Autumn", -1, 0, 0.05, "Cooler air and active game trails reward preparation."),
+            Season("Winter", -5, -1, -0.10, "Hard cold slows recovery and punishes poor stockpiles."),
+        ]
+
+    def _build_events(self) -> List[Event]:
+        """Define low-frequency dynamic events that briefly reshape local conditions."""
+        return [
+            Event("Cold Snap", 18, -3, 0, 0.05, -0.05, -1, "A sharp cold front settles in and hardens surfaces."),
+            Event("Clear Night", 14, -1, -1, 0.1, 0.05, 0, "Skies clear after dusk, boosting visibility and dry fuel."),
+            Event("Animal Trail", 16, 0, 0, 0.0, 0.15, 0, "Fresh tracks cluster around passes and water edges."),
+            Event("Midge Bloom", 12, 1, 1, -0.05, -0.05, 0, "Dense insects rise from still water and open mud."),
+            Event("Berry Flush", 16, 0, 0, 0.0, 0.0, 1, "New berry growth appears along sunny margins."),
+            Event("Mineral Runoff", 20, -1, 0, -0.05, 0.0, -1, "Runoff clouds channels with suspended mineral fines."),
+        ]
 
     def _build_command_table(self) -> Dict[str, Callable[[str], None]]:
         """Map command names to handlers for clean and extensible command dispatch."""
@@ -195,6 +249,8 @@ class SurvivalGame:
         env = self.current_env()
         print(f"\n== {env.name} ==")
         print(f"Terrain: {env.terrain}")
+        print(f"Season: {self.current_season.name} ({self.season_timer}/{self.season_length_hours}h)")
+        print(f"Season Note: {self.current_season.description}")
 
         flavor_parts = [part.strip() for part in env.flavor.split("|") if part.strip()]
         scene_setter = flavor_parts[0] if flavor_parts else env.flavor
@@ -211,6 +267,8 @@ class SurvivalGame:
             print(f"Air & Light: {air_light}")
 
         print(f"\nWeather — {self.weather.name}: {self.weather.mood}")
+        if self.active_event:
+            print(f"Active Event — {self.active_event.name}: {self.active_event.description}")
 
         print("\nWater:")
         for w in env.water_sources:
@@ -236,46 +294,21 @@ class SurvivalGame:
             for note in notes[:2]:
                 print(f" - {note}")
 
-        aside = self._rare_wanderer_aside(env.name)
-        if aside:
-            print(f"\nWanderer Note: {aside}")
-
-    def _rare_wanderer_aside(self, env_name: str) -> str | None:
-        """Occasionally print a short, gentle aside to keep tone whimsical but grounded."""
-        if random.random() > 0.12:
-            return None
-
-        asides = {
-            "Emerald Pinewood": [
-                "A pinecone drops somewhere behind you with the confidence of a drumbeat.",
-                "A squirrel freezes on a branch, reassesses your whole deal, and moves on.",
-            ],
-            "Sunfire Canyon": [
-                "Your own footsteps come back a moment late, like the canyon is double-checking your route.",
-                "A small dust devil crosses the wash, then immediately forgets its purpose.",
-            ],
-            "Frostglass Tundra": [
-                "Snow grains skip across the crust in tidy lines, as if practicing handwriting.",
-                "The cold pinches your nose and keeps excellent time doing it.",
-            ],
-            "Mossmere Wetlands": [
-                "Reed stems click together in the wind with the patience of careful knitting.",
-                "Something plops in dark water, and every nearby insect pretends nothing happened.",
-            ],
-            "Starfall Coast": [
-                "A crab watches from a tide pocket with the calm authority of a lighthouse keeper.",
-                "Foam slides over black rock and leaves a lace edge that vanishes before you can point it out.",
-            ],
-        }
-        return random.choice(asides.get(env_name, ["The place settles into a steady rhythm you can work with."]))
-
     def status(self) -> None:
         p = self.player
         print(
             f"\nHealth:{p.health} Hunger:{p.hunger}/100 Thirst:{p.thirst}/100 "
             f"BodyTemp:{p.body_temp}C Time:{p.hours:02d}:00"
         )
-        print(f"Shelter: {p.shelter.label} | Fire: {'lit' if p.fire_lit else 'out'}")
+        print(
+            f"Shelter: {p.shelter.label} | Fire: {'lit' if p.fire_lit else 'out'} | "
+            f"Season: {self.current_season.name}"
+        )
+        if self.active_event:
+            print(f"Event: {self.active_event.name} ({self.event_timer}h left)")
+
+        tier = "Cold Camp" if p.camp_comfort <= 2 else "Settled Camp" if p.camp_comfort <= 6 else "Cozy Camp"
+        print(f"Camp Comfort: {p.camp_comfort}/10 ({tier})")
         for msg in self._stat_feedback():
             print(f" - {msg}")
 
@@ -306,34 +339,132 @@ class SurvivalGame:
             if count > 0:
                 print(f" - {item}: {count}")
 
+    def _event_modifier(self, attr: str, default: float = 0.0) -> float:
+        if self.active_event is None:
+            return default
+        return float(getattr(self.active_event, attr))
+
+    def _seasonal_regen_amount(self, node: ResourceNode, env: Environment) -> int:
+        """Return per-hour regeneration under season/event pressure and local stress."""
+        regen = node.regen_rate + self.current_season.regen_modifier + int(self._event_modifier("regen_modifier", 0))
+        regen -= node.stress // 3
+
+        if self.player.location == self.world.index(env) and self.player.camp_comfort >= 7:
+            regen += 1
+
+        return max(0, regen)
+
     def _regenerate_world_resources(self, hrs: int) -> None:
         """Regenerate resources in all environments per hour to keep exploration valuable."""
         for _ in range(hrs):
             for env in self.world:
                 for node in env.resource_nodes.values():
-                    node.regenerate()
+                    regen_amount = self._seasonal_regen_amount(node, env)
+                    node.count = min(node.max_count, node.count + regen_amount)
+
+    def _reduce_node_stress(self, amount: int = 1) -> None:
+        """Gradually recover stressed resource nodes over time."""
+        for env in self.world:
+            for node in env.resource_nodes.values():
+                node.stress = max(0, node.stress - amount)
+
+    def _advance_season_clock(self, hrs: int) -> None:
+        """Rotate seasons after fixed in-game hour windows and ease over-harvest stress."""
+        self.season_timer += hrs
+        while self.season_timer >= self.season_length_hours:
+            self.season_timer -= self.season_length_hours
+            self.season_index = (self.season_index + 1) % len(self.seasons)
+            self.current_season = self.seasons[self.season_index]
+            self._reduce_node_stress(1)
+            print(f"\nSeason shift! {self.current_season.name} settles over the land.")
+
+    def _update_event_clock(self, hrs: int) -> None:
+        """Advance active events and roll for rare new events every 24 hours."""
+        if self.active_event:
+            self.event_timer -= hrs
+            if self.event_timer <= 0:
+                print(f"\nEvent fades: {self.active_event.name} passes.")
+                self.active_event = None
+                self.event_timer = 0
+
+        self.event_check_timer += hrs
+        while self.event_check_timer >= 24:
+            self.event_check_timer -= 24
+            if self.active_event is None and random.random() < 0.10:
+                options = self._build_events()
+                if self.current_season.name == "Winter":
+                    options.append(Event("Cold Snap", 20, -3, 0, 0.05, -0.05, -1, "A sharp cold front settles in and hardens surfaces."))
+                self.active_event = random.choice(options)
+                self.event_timer = self.active_event.duration_hours
+                print(f"\nEvent begins: {self.active_event.name}. {self.active_event.description}")
+
+    def _update_camp_comfort(self, hrs: int) -> None:
+        """Track earned camp comfort from sustained fire and shelter stability."""
+        p = self.player
+        if p.fire_lit:
+            p.camp_comfort = min(10, p.camp_comfort + hrs)
+        else:
+            decay = hrs
+            if p.shelter.level > 0:
+                decay = max(0, decay - 1)
+            p.camp_comfort = max(0, p.camp_comfort - decay)
 
     def _update_fire_from_weather(self) -> None:
-        """Weather can extinguish or stabilize fire depending on fire_modifier."""
+        """Weather/event can extinguish fire; established camps resist better."""
         if not self.player.fire_lit:
             return
-        failure_chance = max(0.0, 0.12 - self.weather.fire_modifier)
+
+        fire_mod = self.weather.fire_modifier + self._event_modifier("fire_modifier", 0.0)
+        failure_chance = max(0.0, 0.12 - fire_mod)
+        if self.player.camp_comfort >= 6:
+            failure_chance = max(0.0, failure_chance - 0.04)
+
         if random.random() < failure_chance:
             self.player.fire_lit = False
             print("The weather smothers your fire. The embers sigh dramatically.")
+
+    def _maybe_print_ambient(self, hrs: int) -> None:
+        """Occasionally print lightweight biome ambience based on time, weather, and season."""
+        checks = max(1, hrs // 3)
+        if random.random() > (0.20 * checks):
+            return
+
+        env = self.current_env()
+        mode = "day" if 6 <= self.player.hours < 19 else "night"
+        if self.current_season.name == "Winter" and env.soundscape.get("winter"):
+            mode = "winter"
+        if self.weather.name == "Storm" and env.soundscape.get("storm"):
+            mode = "storm"
+
+        lines = env.soundscape.get(mode) or env.soundscape.get("day") or []
+        if lines:
+            print(f"Ambient: {random.choice(lines)}")
 
     def advance_time(self, hrs: int = 1) -> None:
         p = self.player
         env = self.current_env()
         p.hours = (p.hours + hrs) % 24
+        self._advance_season_clock(hrs)
+        self._update_event_clock(hrs)
+        self._update_camp_comfort(hrs)
+
         if random.random() < 0.35:
             self.weather = random.choice(self.weather_types)
             print(f"\nWeather shift! It is now {self.weather.name.lower()}.")
 
+        total_thirst_rate = self.weather.thirst_rate + int(self._event_modifier("thirst_rate", 0))
+
         # Balanced baseline progression: hunger rises more slowly than thirst.
-        p.hunger = min(100, p.hunger + (2 + max(0, self.weather.thirst_rate // 2)) * hrs)
-        p.thirst = min(100, p.thirst + (3 + self.weather.thirst_rate) * hrs)
-        ambient_temp = 37 + env.temp_bias + self.weather.temperature_shift
+        p.hunger = min(100, p.hunger + (2 + max(0, total_thirst_rate // 2)) * hrs)
+        p.thirst = min(100, p.thirst + (3 + total_thirst_rate) * hrs)
+
+        ambient_temp = (
+            37
+            + env.temp_bias
+            + self.weather.temperature_shift
+            + self.current_season.temp_shift
+            + int(self._event_modifier("temp_shift", 0))
+        )
 
         if p.fire_lit:
             p.body_temp += 1
@@ -348,6 +479,9 @@ class SurvivalGame:
 
         self._update_fire_from_weather()
         self._regenerate_world_resources(hrs)
+        if p.hours == 0:
+            self._reduce_node_stress(1)
+        self._maybe_print_ambient(hrs)
         self.resolve_survival()
 
     def resolve_survival(self) -> None:
@@ -383,8 +517,13 @@ class SurvivalGame:
         gathered = node.harvest(requested)
         self.player.inventory[node.item] += gathered
         print(f"You gather {gathered} x {node.item} from the {env.terrain.lower()}.")
+
         if node.count == 0:
+            node.stress = min(10, node.stress + 1)
             print(f"The nearby {node.item} patch is temporarily depleted.")
+        if node.stress >= 6:
+            print("The patch looks thin from recent use.")
+
         self.advance_time()
 
     def hunt(self) -> None:
@@ -392,7 +531,16 @@ class SurvivalGame:
         target = random.choice(env.huntables)
         has_rope = self.player.inventory.get("rope", 0) > 0
         base_success = 0.45 + (0.15 if has_rope else 0)
-        success = max(0.1, min(0.9, base_success + self.weather.hunt_modifier))
+        success = max(
+            0.1,
+            min(
+                0.9,
+                base_success
+                + self.weather.hunt_modifier
+                + self.current_season.hunt_modifier
+                + self._event_modifier("hunt_modifier", 0.0),
+            ),
+        )
         if random.random() < success:
             meat = random.randint(1, 3)
             hide = random.randint(0, 2)
@@ -492,6 +640,7 @@ class SurvivalGame:
         heal = 8 + (4 * self.player.shelter.level)
         if self.player.fire_lit:
             heal += 4
+        heal += self.player.camp_comfort // 3
         self.player.health = min(100, self.player.health + heal)
         print(f"You rest for a while and recover {heal} health.")
         self.advance_time(3)
@@ -521,6 +670,15 @@ class SurvivalGame:
                 "shelter": asdict(self.player.shelter),
             },
             "weather": asdict(self.weather),
+            "season": {
+                "index": self.season_index,
+                "timer": self.season_timer,
+            },
+            "event": {
+                "active": asdict(self.active_event) if self.active_event else None,
+                "timer": self.event_timer,
+                "check_timer": self.event_check_timer,
+            },
             "world_nodes": [
                 {item: asdict(node) for item, node in env.resource_nodes.items()} for env in self.world
             ],
@@ -541,6 +699,21 @@ class SurvivalGame:
         self.player = Player(**player_data)
         self.player.shelter = Shelter(**shelter_data)
         self.weather = Weather(**payload["weather"])
+
+        season_data = payload.get("season")
+        if season_data:
+            self.season_index = season_data["index"] % len(self.seasons)
+            self.season_timer = season_data["timer"]
+        else:
+            self.season_index = 0
+            self.season_timer = 0
+        self.current_season = self.seasons[self.season_index]
+
+        event_data = payload.get("event", {})
+        active = event_data.get("active") if isinstance(event_data, dict) else None
+        self.active_event = Event(**active) if active else None
+        self.event_timer = event_data.get("timer", 0) if isinstance(event_data, dict) else 0
+        self.event_check_timer = event_data.get("check_timer", 0) if isinstance(event_data, dict) else 0
 
         for env, env_nodes in zip(self.world, payload["world_nodes"]):
             for item, node_data in env_nodes.items():
