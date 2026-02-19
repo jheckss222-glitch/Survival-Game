@@ -421,7 +421,7 @@ class SurvivalGame:
 
         if random.random() < failure_chance:
             self.player.fire_lit = False
-            print("The weather smothers your fire. The embers sigh dramatically.")
+            print("A wet gust strips heat from the coals and the ember bed collapses to a dull red.")
 
     def _maybe_print_ambient(self, hrs: int) -> None:
         """Occasionally print lightweight biome ambience based on time, weather, and season."""
@@ -488,20 +488,20 @@ class SurvivalGame:
         p = self.player
         if p.hunger >= 90:
             p.health -= 2
-            print("You are starving. Your stomach sounds like an angry troll.")
+            print("You are starving. Your stomach grumbles in a low, hollow cadence.")
         if p.thirst >= 90:
             p.health -= 3
-            print("You are dangerously dehydrated. Your tongue feels like old parchment.")
+            print("You are dangerously dehydrated. Your mouth is dry and your tongue sits thick against your palate.")
         if p.body_temp <= 34:
             p.health -= 5
-            print("Hypothermia risk! You're shivering hard.")
+            print("Hypothermia risk! Shivering intensifies and fine motor control begins to fade.")
         if p.body_temp >= 40:
             p.health -= 5
-            print("Hyperthermia risk! Your head swims in the heat.")
+            print("Hyperthermia risk! Heat stress builds and concentration becomes difficult.")
 
         p.body_temp = max(30, min(42, p.body_temp))
         if p.health <= 0:
-            print("\nYou collapse. A passing wizard leaves you a stern note about hydration.")
+            print("\nYou collapse from cumulative exposure and dehydration.")
             self.running = False
 
     def gather(self) -> None:
@@ -520,9 +520,9 @@ class SurvivalGame:
 
         if node.count == 0:
             node.stress = min(10, node.stress + 1)
-            print(f"The nearby {node.item} patch is temporarily depleted.")
+            print(f"The nearby {node.item} patch is temporarily depleted and shows little recent regrowth.")
         if node.stress >= 6:
-            print("The patch looks thin from recent use.")
+            print("The patch looks thin from repeated harvesting and recovery is visibly slow.")
 
         self.advance_time()
 
@@ -546,9 +546,9 @@ class SurvivalGame:
             hide = random.randint(0, 2)
             self.player.inventory["raw_meat"] += meat
             self.player.inventory["hide"] += hide
-            print(f"Successful hunt: {target}. You get {meat} raw meat and {hide} hide.")
+            print(f"Successful hunt: {target}. You recover {meat} raw meat and {hide} hide.")
         else:
-            print(f"The {target} escapes in the {self.weather.name.lower()} weather.")
+            print(f"The {target} breaks cover and escapes in the current {self.weather.name.lower()} conditions.")
         self.advance_time(2)
 
     def drink(self) -> None:
@@ -557,7 +557,7 @@ class SurvivalGame:
         print(f"You drink from {source.name}.")
         if source.quality in {"murky", "muddy", "risky", "salty"} and random.random() < 0.25:
             self.player.health -= 5
-            print("Uh oh. That water was sketchy. You feel ill.")
+            print("The water quality was poor; nausea and cramping set in.")
         self.player.thirst = max(0, self.player.thirst - 35)
         self.advance_time(1)
 
@@ -584,7 +584,7 @@ class SurvivalGame:
 
         if item == "campfire":
             self.player.fire_lit = True
-            print("You build a campfire. Cozy points +10.")
+            print("You build a campfire and establish a stable heat source.")
         elif item == "lean-to":
             self.player.shelter.level = max(self.player.shelter.level, 1)
             self.player.shelter.material = "wood"
@@ -613,7 +613,7 @@ class SurvivalGame:
         inv["cooked_meat"] += cooked
         if inv["mushroom"] > 0 and random.random() < 0.5:
             inv["mushroom"] -= 1
-            print("You roast a mushroom cap. Smells surprisingly noble.")
+            print("You roast a mushroom cap; the aroma is earthy and clean.")
         print(f"You cook {cooked} meat over the fire.")
         self.advance_time(1)
 
@@ -622,7 +622,7 @@ class SurvivalGame:
         if inv["cooked_meat"] > 0:
             inv["cooked_meat"] -= 1
             self.player.hunger = max(0, self.player.hunger - 35)
-            print("You eat cooked meat. Delicious and not screamingly raw.")
+            print("You eat cooked meat and feel your energy return.")
         elif inv["berries"] > 0:
             inv["berries"] -= 1
             self.player.hunger = max(0, self.player.hunger - 15)
@@ -630,7 +630,7 @@ class SurvivalGame:
         elif inv["mushroom"] > 0:
             inv["mushroom"] -= 1
             self.player.hunger = max(0, self.player.hunger - 10)
-            print("You nibble a mushroom. It's either fine or magically adventurous.")
+            print("You eat a mushroom with caution and monitor for any adverse effects.")
         else:
             print("You have nothing edible right now.")
             return
@@ -642,7 +642,7 @@ class SurvivalGame:
             heal += 4
         heal += self.player.camp_comfort // 3
         self.player.health = min(100, self.player.health + heal)
-        print(f"You rest for a while and recover {heal} health.")
+        print(f"You rest in shelter and recover {heal} health.")
         self.advance_time(3)
 
     def travel(self) -> None:
@@ -722,6 +722,36 @@ class SurvivalGame:
 
     def help(self) -> None:
         print(
+            """
+Commands:
+ look, status, inventory
+ gather, hunt, drink, eat, rest, travel
+ craft <item>   (rope, spark_crystal, campfire, lean-to, hut)
+ cook, extinguish, save [file], load [file], help, quit
+"""
+        )
+
+    def run(self) -> None:
+        print("\n🌲 Campfire Cantos: a tiny survival fantasy 🌲")
+        print("You awaken with one stone, one stick, and a clear need to make practical choices.")
+        self.describe_location()
+        self.help()
+
+        while self.running:
+            self.status()
+            cmd = input("\n> ").strip().lower()
+            if not cmd:
+                continue
+            self.execute_command(cmd)
+
+
+def main() -> None:
+    SurvivalGame().run()
+
+
+if __name__ == "__main__":
+    main()
+    
             """
 Commands:
  look, status, inventory
